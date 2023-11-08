@@ -1,0 +1,16 @@
+[package]
+name = "azos-keeper"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+dotenv = "0.15.0"
+env_logger = "0.10.0"
+ethers = "2.0"
+log = "0.4.20"
+rust_decimal = { version = "1.32.0", features = ["maths"] }
+tokio = { version = "1.33.0", features = ["full"] }
+
+[build-dependencies]
+ethers = "2.0"
