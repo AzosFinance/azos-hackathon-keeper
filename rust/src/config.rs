@@ -1,6 +1,17 @@
-use super::types::{Config, Token, TokenPair};
+use super::token::{Token, TokenPair};
 use ethers::abi::Address;
+use rust_decimal::Decimal;
 use std::env;
+
+pub struct Config {
+    pub rpc_url: String,
+    pub uniswap_router_address: String,
+    pub delay_between_checks_ms: i32,
+    pub token_pairs: Vec<TokenPair>,
+    pub weth_address: Address,
+    pub hardcoded_redemption_value: Decimal,
+    pub adapter_fee_rate: Decimal,
+}
 
 pub fn generate_config() -> Config {
     // FIXME: Move to a config.rs file or similar?
@@ -35,6 +46,8 @@ pub fn generate_config() -> Config {
         // FIXME: Replace with env var
         uniswap_router_address: String::from("0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"), // WETH
         delay_between_checks_ms: 3_000,
+        hardcoded_redemption_value: Decimal::from(1),
+        adapter_fee_rate: Decimal::from_str_exact("0.003").unwrap(),
         token_pairs,
         weth_address,
     }
