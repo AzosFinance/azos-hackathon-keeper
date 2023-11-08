@@ -17,7 +17,7 @@ use token::TokenPair;
 
 async fn get_dex_price(
     config: &Config,
-    uniswap: &UniswapV2<Provider<Http>>,
+    uniswap: &UniswapV2<Arc<Provider<Http>>>,
     pair: &TokenPair,
 ) -> Decimal {
     let in_address: Address = pair.token_in.address.parse().unwrap();
@@ -42,15 +42,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting up..");
     let config = config::generate_config();
 
-    let provider = Provider::<Http>::try_from(config.rpc_url.clone()).unwrap();
-
     let uniswap_address = config
         .uniswap_router_address
         .parse::<Address>()
         .expect("Provided Uniswap address is not valid");
-    let uniswap = UniswapV2::new(uniswap_address, Arc::new(provider));
+    let uniswap_provider = Arc::new(Provider::<Http>::try_from(config.rpc_url.clone()).unwrap());
+    let uniswap = UniswapV2::new(uniswap_address, Arc::new(uniswap_provider));
 
-    let stability_module = AzosStabilityModule::new(uniswap_address, Arc::new(provider));
+    // FIXME: Figure out if it's possible to share a single provider
+    let stability_module_provider =
+        Arc::new(Provider::<Http>::try_from(config.rpc_url.clone()).unwrap());
+    let stability_module =
+        AzosStabilityModule::new(uniswap_address, Arc::new(stability_module_provider));
 
     info!("Configuration loaded, initiating keeper loop");
     let delay_between_checks = time::Duration::from_millis(config.delay_between_checks_ms as u64);
@@ -61,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // FIXME: Make the price_gap incorporate the adapter_fee_rate
             let price_gap = internal_price - dex_price;
 
-            let adapter_name = "UniswapV2".as_bytes().try_into().unwrap();
+            let adapter_name: [u8; 32] = [0u8; 32];
 
             // FIXME: Replace these weird values with real ones
             match price_gap.cmp(&Decimal::ZERO) {
@@ -74,13 +77,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         uniswap_address,
                         U256::from(1),
                     );
-
                     let expand_and_buy = stability_module.expand_and_buy(
                         adapter_name,
                         swap_exact_tokens_for_tokens.calldata().unwrap(),
                         U256::from(1),
                     );
-                    info!("Price gap > 0, expandAndBuy call: {:?}", expand_and_buy);
+                    info!(
+                        "Price gap > 0, expandAndBuy call: {:?}",
+                        expand_and_buy.calldata()
+                    );
                     // FIXME: Perform the call, using a wallet
                 }
                 Ordering::Less => {
@@ -92,12 +97,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         uniswap_address,
                         U256::from(1),
                     );
-
                     let contract_and_sell = stability_module.contract_and_sell(
                         adapter_name,
                         swap_exact_tokens_for_tokens.calldata().unwrap(),
                     );
-                    info!("Price gap < 0, contractAndSell: {:?}", contract_and_sell);
+                    info!(
+                        "Price gap < 0, contractAndSell: {:?}",
+                        contract_and_sell.calldata()
+                    );
                     // FIXME: Perform the call, using a wallet
                 }
                 Ordering::Equal => {
