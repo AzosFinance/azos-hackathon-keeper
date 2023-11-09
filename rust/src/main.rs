@@ -64,9 +64,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // FIXME: Make the price_gap incorporate the adapter_fee_rate
             let price_gap = internal_price - dex_price;
 
-            let adapter_name: [u8; 32] = [0u8; 32];
+            // Adapter name
+            let mut adapter_name = [0u8; 32];
+            let adapter_name_string = "UniswapV2";
+            adapter_name[..adapter_name_string.as_bytes().len()]
+                .copy_from_slice(adapter_name_string.as_bytes());
 
-            // FIXME: Replace these weird values with real ones
             match price_gap.cmp(&Decimal::ZERO) {
                 Ordering::Greater => {
                     // FIXME: Proper values
