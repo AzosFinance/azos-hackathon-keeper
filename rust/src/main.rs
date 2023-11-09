@@ -17,7 +17,7 @@ use token::TokenPair;
 
 async fn get_dex_price(
     config: &Config,
-    uniswap: &UniswapV2<Arc<Provider<Http>>>,
+    uniswap: &UniswapV2<Provider<Http>>,
     pair: &TokenPair,
 ) -> Decimal {
     let in_address: Address = pair.token_in.address.parse().unwrap();
@@ -42,18 +42,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting up..");
     let config = config::generate_config();
 
+    let provider = Arc::new(Provider::<Http>::try_from(config.rpc_url.clone()).unwrap());
+
     let uniswap_address = config
         .uniswap_router_address
         .parse::<Address>()
         .expect("Provided Uniswap address is not valid");
-    let uniswap_provider = Arc::new(Provider::<Http>::try_from(config.rpc_url.clone()).unwrap());
-    let uniswap = UniswapV2::new(uniswap_address, Arc::new(uniswap_provider));
+    let uniswap = UniswapV2::new(uniswap_address, provider.clone());
 
-    // FIXME: Figure out if it's possible to share a single provider
-    let stability_module_provider =
-        Arc::new(Provider::<Http>::try_from(config.rpc_url.clone()).unwrap());
-    let stability_module =
-        AzosStabilityModule::new(uniswap_address, Arc::new(stability_module_provider));
+    let stability_module = AzosStabilityModule::new(uniswap_address, provider.clone());
 
     info!("Configuration loaded, initiating keeper loop");
     let delay_between_checks = time::Duration::from_millis(config.delay_between_checks_ms as u64);
