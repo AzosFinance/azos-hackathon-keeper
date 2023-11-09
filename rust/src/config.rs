@@ -15,19 +15,19 @@ pub struct Config {
 }
 
 pub fn generate_config() -> Config {
-    // FIXME: Move to a config.rs file or similar?
-    let weth_address: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+    let weth_address: Address = env::var("WETH_ADDRESS")
+        .expect("WETH_ADDRESS environment variable not set")
         .parse()
         .unwrap();
+
     let usdc = Token {
         symbol: String::from("USDC"),
-        // FIXME: Convert to Address instances?
-        address: String::from("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"),
+        address: env::var("USDC_ADDRESS").expect("USDC_ADDRESS environment variable not set"),
         decimals: 6,
     };
     let usdt = Token {
         symbol: String::from("USDT"),
-        address: String::from("0xdac17f958d2ee523a2206206994597c13d831ec7"),
+        address: env::var("USDT_ADDRESS").expect("USDT_ADDRESS environment variable not set"),
         decimals: 6,
     };
     let token_pairs = vec![
@@ -46,8 +46,8 @@ pub fn generate_config() -> Config {
         rpc_url: env::var("RPC_URL").expect("RPC_URL environment variable not set"),
         wallet_private_key: env::var("KEEPER_WALLET_PRIVATE_KEY")
             .expect("KEEPER_WALLET_PRIVATE_KEY environment variable not set"),
-        // FIXME: Replace with env var
-        uniswap_router_address: String::from("0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"), // WETH
+        uniswap_router_address: env::var("UNISWAP_ROUTER_ADDRESS")
+            .expect("UNISWAP_ROUTER_ADDRESS environment variable not set"),
         delay_between_checks_ms: 3_000,
         hardcoded_redemption_value: Decimal::from(1),
         adapter_fee_rate: Decimal::from_str_exact("0.003").unwrap(),
