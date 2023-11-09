@@ -42,16 +42,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting up..");
     let config = config::generate_config();
 
+    // Provider, Wallet, and Signer Client
     let provider = Arc::new(Provider::<Http>::try_from(config.rpc_url.clone()).unwrap());
+    let wallet: LocalWallet = config
+        .wallet_private_key
+        .parse::<LocalWallet>()?
+        // FIXME: Make this chain configured from env var
+        .with_chain_id(Chain::Sepolia);
+    let _client = SignerMiddleware::new(provider.clone(), wallet.clone());
 
+    // Uniswap
     let uniswap_address = config
         .uniswap_router_address
         .parse::<Address>()
         .expect("Provided Uniswap address is not valid");
     let uniswap = UniswapV2::new(uniswap_address, provider.clone());
 
+    // Stability Module
     let stability_module = AzosStabilityModule::new(uniswap_address, provider.clone());
 
+    // Core loop
     info!("Configuration loaded, initiating keeper loop");
     let delay_between_checks = time::Duration::from_millis(config.delay_between_checks_ms as u64);
     loop {

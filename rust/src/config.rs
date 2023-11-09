@@ -11,6 +11,7 @@ pub struct Config {
     pub weth_address: Address,
     pub hardcoded_redemption_value: Decimal,
     pub adapter_fee_rate: Decimal,
+    pub wallet_private_key: String,
 }
 
 pub fn generate_config() -> Config {
@@ -43,6 +44,8 @@ pub fn generate_config() -> Config {
 
     Config {
         rpc_url: env::var("RPC_URL").expect("RPC_URL environment variable not set"),
+        wallet_private_key: env::var("KEEPER_WALLET_PRIVATE_KEY")
+            .expect("KEEPER_WALLET_PRIVATE_KEY environment variable not set"),
         // FIXME: Replace with env var
         uniswap_router_address: String::from("0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"), // WETH
         delay_between_checks_ms: 3_000,
