@@ -59,7 +59,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let uniswap = UniswapV2::new(uniswap_address, provider.clone());
 
     // Stability Module
-    let stability_module = AzosStabilityModule::new(uniswap_address, provider.clone());
+    let stability_module_address = config
+        .stability_module_address
+        .parse::<Address>()
+        .expect("Provided Azos Stability Module address is not valid");
+    let stability_module = AzosStabilityModule::new(stability_module_address, provider.clone());
 
     // Core loop
     info!("Configuration loaded, initiating keeper loop");
@@ -73,9 +77,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Adapter name
             let mut adapter_name = [0u8; 32];
+            // FIXME: Use env var for selecting adapter, or configure in config.rs
             let adapter_name_string = "UniswapV2";
             adapter_name[..adapter_name_string.as_bytes().len()]
                 .copy_from_slice(adapter_name_string.as_bytes());
+
+            // FIXME: Surface errors with Sentry
 
             match price_gap.cmp(&Decimal::ZERO) {
                 Ordering::Greater => {
@@ -119,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Ordering::Equal => {
                     // Values are equal, noop
-                } // FIXME: Alert if a wallet balance is too low for gas fees
+                }
             }
         }
 
