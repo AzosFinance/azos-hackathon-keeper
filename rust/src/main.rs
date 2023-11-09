@@ -17,7 +17,7 @@ use token::TokenPair;
 
 async fn get_dex_price(
     config: &Config,
-    uniswap: &UniswapV2<Arc<Provider<Http>>>,
+    uniswap: &UniswapV2<Provider<Http>>,
     pair: &TokenPair,
 ) -> Decimal {
     let in_address: Address = pair.token_in.address.parse().unwrap();
@@ -42,19 +42,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting up..");
     let config = config::generate_config();
 
+    // Provider, Wallet, and Signer Client
+    let provider = Arc::new(Provider::<Http>::try_from(config.rpc_url.clone()).unwrap());
+    let wallet: LocalWallet = config
+        .wallet_private_key
+        .parse::<LocalWallet>()?
+        // FIXME: Make this chain configured from env var
+        .with_chain_id(Chain::Sepolia);
+    let _client = SignerMiddleware::new(provider.clone(), wallet.clone());
+
+    // Uniswap
     let uniswap_address = config
         .uniswap_router_address
         .parse::<Address>()
         .expect("Provided Uniswap address is not valid");
-    let uniswap_provider = Arc::new(Provider::<Http>::try_from(config.rpc_url.clone()).unwrap());
-    let uniswap = UniswapV2::new(uniswap_address, Arc::new(uniswap_provider));
+    let uniswap = UniswapV2::new(uniswap_address, provider.clone());
 
-    // FIXME: Figure out if it's possible to share a single provider
-    let stability_module_provider =
-        Arc::new(Provider::<Http>::try_from(config.rpc_url.clone()).unwrap());
-    let stability_module =
-        AzosStabilityModule::new(uniswap_address, Arc::new(stability_module_provider));
+    // Stability Module
+    let stability_module_address = config
+        .stability_module_address
+        .parse::<Address>()
+        .expect("Provided Azos Stability Module address is not valid");
+    let stability_module = AzosStabilityModule::new(stability_module_address, provider.clone());
 
+    // Core loop
     info!("Configuration loaded, initiating keeper loop");
     let delay_between_checks = time::Duration::from_millis(config.delay_between_checks_ms as u64);
     loop {
@@ -64,9 +75,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // FIXME: Make the price_gap incorporate the adapter_fee_rate
             let price_gap = internal_price - dex_price;
 
-            let adapter_name: [u8; 32] = [0u8; 32];
+            // Adapter name
+            let mut adapter_name = [0u8; 32];
+            // FIXME: Use env var for selecting adapter, or configure in config.rs
+            let adapter_name_string = "UniswapV2";
+            adapter_name[..adapter_name_string.as_bytes().len()]
+                .copy_from_slice(adapter_name_string.as_bytes());
 
-            // FIXME: Replace these weird values with real ones
+            // FIXME: Surface errors with Sentry
+
             match price_gap.cmp(&Decimal::ZERO) {
                 Ordering::Greater => {
                     // FIXME: Proper values
@@ -109,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Ordering::Equal => {
                     // Values are equal, noop
-                } // FIXME: Alert if a wallet balance is too low for gas fees
+                }
             }
         }
 
