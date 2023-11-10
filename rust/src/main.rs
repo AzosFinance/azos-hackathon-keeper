@@ -1,6 +1,7 @@
 mod config;
 mod contracts;
 mod token;
+mod uniswap;
 
 use config::Config;
 use contracts::azos_stability_module::AzosStabilityModule;
@@ -20,8 +21,8 @@ async fn get_dex_price(
     uniswap: &UniswapV2<Provider<Http>>,
     pair: &TokenPair,
 ) -> Decimal {
-    let in_address: Address = pair.token_in.address.parse().unwrap();
-    let out_address: Address = pair.token_out.address.parse().unwrap();
+    let in_address: Address = pair.token_in.address;
+    let out_address: Address = pair.token_out.address;
     let request = uniswap.get_amounts_out(
         U256::from(1) * U256::exp10(pair.token_in.decimals as usize),
         vec![in_address, config.weth_address, out_address],
@@ -44,12 +45,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Provider, Wallet, and Signer Client
     let provider = Arc::new(Provider::<Http>::try_from(config.rpc_url.clone()).unwrap());
-    let wallet: LocalWallet = config
+    let keeper_wallet: LocalWallet = config
         .wallet_private_key
         .parse::<LocalWallet>()?
         // FIXME: Make this chain configured from env var
         .with_chain_id(Chain::Sepolia);
-    let _client = SignerMiddleware::new(provider.clone(), wallet.clone());
+    let _client = SignerMiddleware::new(provider.clone(), keeper_wallet.clone());
 
     // Uniswap
     let uniswap_address = config
@@ -76,13 +77,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let price_gap = internal_price - dex_price;
 
             // Adapter name
-            let mut adapter_name = [0u8; 32];
             // FIXME: Use env var for selecting adapter, or configure in config.rs
+            let mut adapter_name = [0u8; 32];
             let adapter_name_string = "UniswapV2";
             adapter_name[..adapter_name_string.as_bytes().len()]
                 .copy_from_slice(adapter_name_string.as_bytes());
-
-            // FIXME: Surface errors with Sentry
 
             match price_gap.cmp(&Decimal::ZERO) {
                 Ordering::Greater => {

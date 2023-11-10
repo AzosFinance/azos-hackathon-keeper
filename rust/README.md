@@ -51,6 +51,12 @@ Similar to the release build, these instructions will create a Docker image loca
    make docker
    ```
 
+1. Run the Docker image!
+
+   ```shell
+   docker run -it azos-keeper
+   ```
+
 ## Need Help
 
 TODO, contact information for Azos rust team

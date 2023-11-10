@@ -1,7 +1,9 @@
+use ethers::abi::Address;
+
 #[derive(Clone)]
 pub struct Token {
     pub symbol: String,
-    pub address: String,
+    pub address: Address,
     pub decimals: u64,
 }
 
