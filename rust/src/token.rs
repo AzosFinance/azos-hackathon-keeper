@@ -10,6 +10,6 @@ pub struct Token {
 #[derive(Clone)]
 pub struct TokenPair {
     pub symbol: String,
-    pub token_in: Token,
-    pub token_out: Token,
+    pub token_0: Token,
+    pub token_1: Token,
 }

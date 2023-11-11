@@ -7,12 +7,13 @@ pub struct Config {
     pub rpc_url: String,
     pub delay_between_checks_ms: i32,
     pub token_pairs: Vec<TokenPair>,
-    pub hardcoded_redemption_value: Decimal,
     pub keeper_wallet_private_key: String,
     pub uniswap_router_address: Address,
     pub uniswap_factory_address: Address,
     pub uniswap_fee_rate: Decimal,
     pub stability_module_address: Address,
+    pub ratio_range_allowed: (Decimal, Decimal),
+    pub adapter_name: String,
 }
 
 pub fn generate_config() -> Config {
@@ -36,8 +37,8 @@ pub fn generate_config() -> Config {
 
     let token_pairs = vec![TokenPair {
         symbol: String::from("USDC/ZAI"),
-        token_in: usdc,
-        token_out: zai,
+        token_0: usdc,
+        token_1: zai,
     }];
 
     let uniswap_fee_rate_string =
@@ -62,10 +63,14 @@ pub fn generate_config() -> Config {
             .expect("UNISWAP_FACTORY_ADDRESS environment variable not set")
             .parse()
             .expect("UNISWAP_FACTORY_ADDRESS not a valid address"),
-        delay_between_checks_ms: 3_000,
-        hardcoded_redemption_value: Decimal::from(1),
+        delay_between_checks_ms: 10_000,
         uniswap_fee_rate: Decimal::from_str_exact(uniswap_fee_rate_string.as_str()).unwrap(),
         token_pairs,
         stability_module_address,
+        adapter_name: String::from("USDC"),
+        ratio_range_allowed: (
+            Decimal::from_str_exact("0.997").unwrap(),
+            Decimal::from_str_exact("1.003").unwrap(),
+        ),
     }
 }
