@@ -95,8 +95,7 @@ async fn get_profitable_token_swap_amounts(
     (
         // FIXME: Use real math to figure out the number to use..
         quantity_to_buy * Decimal::from_str_exact("0.8").unwrap(),
-        Decimal::ZERO,
-        // quantity_to_buy,
+        quantity_to_buy * Decimal::from_str_exact("0.7").unwrap(),
         vec![token_to_sell.address, token_to_buy.address],
     )
 }
@@ -160,21 +159,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .await;
 
                         // FIXME: Determine which one to use.. with structure or raw
+                        let to_address = stability_module.address();
                         let swap_exact_tokens_for_tokens = uniswap_router
                             .swap_exact_tokens_for_tokens(
                                 decimal_to_u256(amount_in, token_pair.token_1.decimals), // ZAI
                                 decimal_to_u256(amount_out_min, token_pair.token_0.decimals), // USDC
                                 path.clone(),
-                                keeper_wallet_address,
+                                to_address,
                                 deadline,
                             );
                         let delegate_call_data = swap_exact_tokens_for_tokens.calldata().unwrap();
 
-                        debug!("SWAP_EXACT_TOKENS_FOR_TOKENS CALL, amount_in: {amount_in}, amount_out_min: {amount_out_min}, path: {path:?}, to: {keeper_wallet_address}, deadline: {deadline}");
-                        debug!(
-                            "SWAP_EXACT_TOKENS_FOR_TOKENS delegate_call_data={delegate_call_data}",
-                        );
-                        debug!("EXPAND_AND_BUY CALL, adapter_name: {adapter_name:?}, amount_in: {amount_in}, amount_out_min: {amount_out_min}, path: {path:?}, to: {keeper_wallet_address}, deadline: {deadline}");
+                        debug!("SWAP_EXACT_TOKENS_FOR_TOKENS CALL, amount_in={amount_in}, amount_out_min={amount_out_min}, path={path:?}, to={to_address}, deadline={deadline}");
+                        debug!("EXPAND_AND_BUY CALL, adapter_name={adapter_name:?}, data={delegate_call_data}");
 
                         Some(stability_module.expand_and_buy(
                             adapter_name,
