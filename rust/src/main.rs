@@ -2,14 +2,14 @@ mod config;
 mod contracts;
 mod token;
 
-use contracts::azos_stability_module::AzosStabilityModule;
+use contracts::azos_stability_module::{AzosStabilityModule, AzosStabilityModuleErrors};
 use contracts::uniswap_v2_factory::UniswapV2Factory;
 use contracts::uniswap_v2_pair::UniswapV2Pair;
 use contracts::uniswap_v2_router02::UniswapV2Router02;
 use ethers::abi::Address;
 use ethers::prelude::*;
 use ethers::providers::{Http, Provider};
-use log::info;
+use log::{error, info};
 use rust_decimal::{Decimal, MathematicalOps};
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -38,18 +38,18 @@ async fn get_dex_price(uniswap_router: &UniswapRouter, token_pair: &TokenPair) -
             .unwrap();
 
     info!("{}/{} price={}", token_in.symbol, token_out.symbol, price);
+    info!("Inverse price={}", Decimal::ONE / price);
 
     price
 }
 
 fn get_swap_deadline_from_now() -> U256 {
-    let future = SystemTime::now() + Duration::from_secs(60 * 60 * 24);
-    U256::from(
-        future
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-    )
+    let future = SystemTime::now() + Duration::from_secs(120);
+    let future_timestamp = future
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    U256::from(future_timestamp)
 }
 
 fn decimal_to_u256(dec: Decimal, decimals: u64) -> U256 {
@@ -70,21 +70,24 @@ async fn get_profitable_token_swap_amounts(
     let uniswap_pair_address = uniswap_pair_address_request.call().await.unwrap();
     let pair = UniswapV2Pair::new(uniswap_pair_address, provider.clone());
 
+    let token0 = pair.token_0().call().await.unwrap();
+    let token1 = pair.token_1().call().await.unwrap();
+    info!("t0:{}, t1:{}", token0, token1);
+
     // TODO: Figure out how much volume there is of both tokens in the pool
     let (raw_vol1, raw_vol2, _timestamp) = pair.get_reserves().call().await.unwrap();
-    let lp_fee_rate_remainder = Decimal::ONE - Decimal::from_str_exact("0.003").unwrap();
-    let vol1 = (Decimal::from(raw_vol1) * lp_fee_rate_remainder)
-        / Decimal::from(10).checked_powu(token_in.decimals).unwrap();
+    let vol1 = Decimal::from(raw_vol1) / Decimal::from(10).checked_powu(token_in.decimals).unwrap();
     let vol2 =
         Decimal::from(raw_vol2) / Decimal::from(10).checked_powu(token_out.decimals).unwrap();
-    let price_from_vols = vol1 / vol2;
+    let price_from_vols = vol2 / vol1;
     info!(
-        "{}/{} RESERVES: {}, {}.. price after lp fee? {}",
-        token_in.symbol, token_out.symbol, vol1, vol2, price_from_vols
+        "{}/{} RESERVES: {}, {}",
+        token_in.symbol, token_out.symbol, vol1, vol2
     );
 
     // TODO: Determine how much to attempt to buy
-    let quantity_to_buy = vol2 - vol1;
+    // FIXME: Remove this 90% modifier
+    let quantity_to_buy = vol1 - vol2;
     let quantity_to_buy_using_ratios = (Decimal::ONE - price_from_vols) * vol2;
     info!(
         "How many to buy? Known qual qty={}, using ratios={}",
@@ -92,10 +95,12 @@ async fn get_profitable_token_swap_amounts(
     );
     // TODO: Incorporate slippage somehow
     // TODO: Incorporate gas price somehow.. maybe outside this function
+    let quantity_to_buy = Decimal::from_str_exact("50000").unwrap();
 
     (
         quantity_to_buy,
-        quantity_to_buy,
+        Decimal::ZERO,
+        // quantity_to_buy,
         vec![token_in.address, token_out.address],
     )
 }
@@ -130,50 +135,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let delay_between_checks = time::Duration::from_millis(config.delay_between_checks_ms as u64);
     loop {
         for token_pair in &config.token_pairs {
-            let internal_price = config.hardcoded_redemption_value;
             let dex_price = get_dex_price(&uniswap_router, token_pair).await;
-            // FIXME: Make the price_gap incorporate the adapter_fee_rate and split to its own function
-            let price_gap = internal_price - dex_price;
 
             // Adapter name
             // FIXME: Use env var for selecting adapter, or configure in config.rs
             let mut adapter_name = [0u8; 32];
-            let adapter_name_string = String::from("UniswapV2");
+            // FIXME: Change when typo fixed in contract
+            // let adapter_name_string = String::from("UniswapV2");
+            let adapter_name_string = String::from("USDC");
             adapter_name[..adapter_name_string.as_bytes().len()]
                 .copy_from_slice(adapter_name_string.as_bytes());
 
             // FIXME: Be less verbose in each branch, compact the code a bit
-            match price_gap.cmp(&Decimal::ZERO) {
-                Ordering::Greater => {
-                    let (amount_in, amount_out_min, path) = get_profitable_token_swap_amounts(
-                        provider.clone(),
-                        &uniswap_factory,
-                        &token_pair.token_in,
-                        &token_pair.token_out,
-                    )
-                    .await;
-                    let swap_exact_tokens_for_tokens = uniswap_router.swap_exact_tokens_for_tokens(
-                        decimal_to_u256(amount_in, token_pair.token_in.decimals),
-                        decimal_to_u256(amount_out_min, token_pair.token_out.decimals),
-                        path,
-                        config.stability_module_address,
-                        get_swap_deadline_from_now(),
-                    );
-                    let expand_and_buy = stability_module.expand_and_buy(
-                        adapter_name,
-                        swap_exact_tokens_for_tokens.calldata().unwrap(),
-                        U256::from(1),
-                    );
-                    info!(
-                        "Price gap > 0, expandAndBuy call: {:?}",
-                        expand_and_buy.calldata()
-                    );
-                    // FIXME: Perform the call, using a wallet
-                }
+            let tx_func = match dex_price.cmp(&Decimal::ZERO) {
                 Ordering::Less => {
                     let (amount_in, amount_out_min, path) = get_profitable_token_swap_amounts(
                         provider.clone(),
                         &uniswap_factory,
+                        &token_pair.token_in,
+                        &token_pair.token_out,
+                    )
+                    .await;
+
+                    let swap_exact_tokens_for_tokens = uniswap_router.swap_exact_tokens_for_tokens(
+                        decimal_to_u256(amount_in, token_pair.token_in.decimals),
+                        decimal_to_u256(amount_out_min, token_pair.token_out.decimals),
+                        path,
+                        config.stability_module_address,
+                        get_swap_deadline_from_now(),
+                    );
+                    println!("{}", swap_exact_tokens_for_tokens.calldata().unwrap());
+                    stability_module.expand_and_buy(
+                        adapter_name,
+                        swap_exact_tokens_for_tokens.calldata().unwrap(),
+                        decimal_to_u256(amount_in, token_pair.token_in.decimals),
+                    )
+                }
+                _ => {
+                    let (amount_in, amount_out_min, path) = get_profitable_token_swap_amounts(
+                        provider.clone(),
+                        &uniswap_factory,
                         &token_pair.token_out,
                         &token_pair.token_in,
                     )
@@ -185,20 +186,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         config.stability_module_address,
                         get_swap_deadline_from_now(),
                     );
-                    let contract_and_sell = stability_module.contract_and_sell(
+                    stability_module.contract_and_sell(
                         adapter_name,
                         swap_exact_tokens_for_tokens.calldata().unwrap(),
-                    );
-                    info!(
-                        "Price gap < 0, contractAndSell: {:?}",
-                        contract_and_sell.calldata()
-                    );
-                    // FIXME: Perform the call, using a wallet
+                    )
                 }
-                Ordering::Equal => {
-                    // Values are equal, noop
-                }
-            }
+            };
+
+            // Wallet ethereum balance
+            let balance_int = provider
+                .get_balance(keeper_wallet.address(), None)
+                .await
+                .unwrap()
+                .as_u64();
+            let balance = Decimal::from(balance_int) / Decimal::from(10).checked_powu(18).unwrap();
+            info!("Current wallet balance: {balance}");
+
+            // Perform the transaction
+            keeper_wallet.sign_transaction_sync(&tx_func.tx).unwrap();
+            let error = tx_func.send().await.unwrap_err();
+            println!("{}", error);
+            let revert_reason: contracts::azos_stability_module::AzosStabilityModuleErrors =
+                error.decode_contract_revert().unwrap();
+
+            // TODO: Save that we executed an action this block and can skip subsequent ones for this block..
+            // TODO: Wait for the outcome?
         }
 
         thread::sleep(delay_between_checks);

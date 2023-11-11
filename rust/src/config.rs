@@ -22,7 +22,7 @@ pub fn generate_config() -> Config {
             .expect("USDC_ADDRESS environment variable not set")
             .parse()
             .expect("USDC_ADDRESS not a valid address"),
-        decimals: 6,
+        decimals: 18,
     };
 
     let zai = Token {
@@ -31,13 +31,13 @@ pub fn generate_config() -> Config {
             .expect("ZAI_ADDRESS environment variable not set")
             .parse()
             .expect("USDT_ADDRESS not a valid address"),
-        decimals: 6,
+        decimals: 18,
     };
 
     let token_pairs = vec![TokenPair {
-        symbol: String::from("ZAI/USDC"),
-        token_in: zai,
-        token_out: usdc,
+        symbol: String::from("USDC/ZAI"),
+        token_in: usdc,
+        token_out: zai,
     }];
 
     let uniswap_fee_rate_string =
