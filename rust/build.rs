@@ -8,6 +8,13 @@ fn main() {
         .write_to_file("./src/contracts/azos_stability_module.rs")
         .unwrap();
 
+    Abigen::new("AzosAdapterUniswapV2", "./abis/AzosAdapterUniswapV2.json")
+        .unwrap()
+        .generate()
+        .unwrap()
+        .write_to_file("./src/contracts/azos_adapter_uniswap_v2.rs")
+        .unwrap();
+
     Abigen::new("UniswapV2Router02", "./abis/UniswapV2Router02.json")
         .unwrap()
         .generate()

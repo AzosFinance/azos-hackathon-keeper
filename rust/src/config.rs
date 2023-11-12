@@ -14,6 +14,7 @@ pub struct Config {
     pub stability_module_address: Address,
     pub ratio_range_allowed: (Decimal, Decimal),
     pub adapter_name: String,
+    pub adapter_uniswap_v2_address: Address,
 }
 
 pub fn generate_config() -> Config {
@@ -49,6 +50,11 @@ pub fn generate_config() -> Config {
         .parse()
         .expect("STABILITY_MODULE_ADDRESS is not valid");
 
+    let adapter_uniswap_v2_address: Address = env::var("ADAPTER_UNISWAP_V2_ADDRESS")
+        .expect("ADAPTER_UNISWAP_V2_ADDRESS environment variable not set")
+        .parse()
+        .expect("ADAPTER_UNISWAP_V2_ADDRESS is not valid");
+
     Config {
         rpc_url: env::var("RPC_URL").expect("RPC_URL environment variable not set"),
         keeper_wallet_private_key: env::var("KEEPER_WALLET_PRIVATE_KEY")
@@ -68,6 +74,7 @@ pub fn generate_config() -> Config {
         token_pairs,
         stability_module_address,
         adapter_name: String::from("USDC"),
+        adapter_uniswap_v2_address,
         ratio_range_allowed: (
             Decimal::from_str_exact("0.997").unwrap(),
             Decimal::from_str_exact("1.003").unwrap(),
