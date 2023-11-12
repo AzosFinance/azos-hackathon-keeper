@@ -95,19 +95,21 @@ async fn get_profitable_token_swap_amounts(
     debug!("Reserve balances.. t0={supply1}, t1={supply2}, price={price_from_supplies}");
 
     // Attempt 1 using mid-point
-    let distance = supply1 - supply2;
-    let half_distance = distance / Decimal::from(2);
-    let quantity_to_buy = half_distance * Decimal::from_str_exact("0.9").unwrap();
-    let quantity_to_expect = Decimal::ZERO;
+    // let distance = supply1 - supply2;
+    // let half_distance = distance / Decimal::from(2);
+    // let quantity_to_buy = half_distance;
+    // let quantity_to_expect = quantity_to_buy;
 
-    // Attempt 2 using delta and math
-    // Assuming ZAI is doing better than USDC, we want to sell ZAI to buy USDC
-    // t0 = USDC
-    // t1 = ZAI
-    // TARGET = 1.003
-    // USDC = 1101205.013036048793347673
-    // ZAI = 908836.925237927728643761
-    // USDC/ZAI = PRICE
+    // Attempt 2 using goal position
+    let total_supply = supply1 + supply2;
+    let goal_ratio = config.ratio_range_allowed.1;
+    let expected_token1_supply = (total_supply / Decimal::TWO)
+        + (((goal_ratio - Decimal::ONE) / Decimal::TWO.powu(2)) * total_supply);
+    let quantity_to_buy = supply1 - expected_token1_supply;
+    let quantity_to_expect = quantity_to_buy;
+    let resulting_ratio = (supply1 - quantity_to_buy) / (supply2 + quantity_to_buy);
+    debug!("PROFITABLE TOKEN SWAP AMOUNTS, expected_resulting_supply={expected_token1_supply}, quantity_to_buy={quantity_to_buy}, quantity_to_expect={quantity_to_expect}");
+    debug!("RESULTING RATIO, {}", resulting_ratio);
 
     (
         quantity_to_buy,
@@ -164,11 +166,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Determine action to take
             let maybe_tx_func = match dex_price.cmp(&Decimal::ZERO) {
                 Ordering::Greater => {
+                    // Greater means ZAI (token1) is worth more than USDC (token0), so we should mint more ZAI (token1) and buy USDC (token0) via expand_and_buy
                     if dex_price < config.ratio_range_allowed.0 {
                         // Price is within ignore range, noop
                         None
                     } else {
-                        // Greater means ZAI (token1) is worth more than USDC (token0), so we should mint more ZAI (token1) and buy USDC (token0) via expand_and_buy
                         let (amount_in, amount_out_min, path) = get_profitable_token_swap_amounts(
                             &config,
                             provider.clone(),
@@ -212,11 +214,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Ordering::Less => {
+                    // Less means USDC (token0) is worth more than ZAI (token1), so we should be buying ZAI (token1) and burning it via contract_and_sell
                     if dex_price > config.ratio_range_allowed.1 {
                         // Price is within ignore range, noop
                         None
                     } else {
-                        // Less means USDC (token0) is worth more than ZAI (token1), so we should be buying ZAI (token1) and burning it via contract_and_sell
                         let (amount_in, amount_out_min, path) = get_profitable_token_swap_amounts(
                             &config,
                             provider.clone(),
