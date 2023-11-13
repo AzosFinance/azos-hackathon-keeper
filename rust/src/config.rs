@@ -70,7 +70,7 @@ pub fn generate_config() -> Config {
             .expect("UNISWAP_FACTORY_ADDRESS environment variable not set")
             .parse()
             .expect("UNISWAP_FACTORY_ADDRESS not a valid address"),
-        delay_between_checks_ms: 10_000,
+        delay_between_checks_ms: 3_000,
         uniswap_fee_rate: Decimal::from_str_exact(uniswap_fee_rate_string.as_str()).unwrap(),
         token_pairs,
         stability_module_address,
