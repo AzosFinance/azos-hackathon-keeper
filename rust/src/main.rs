@@ -44,9 +44,17 @@ fn decimal_to_u256(dec: Decimal, decimals: u64) -> U256 {
     U256::from_dec_str(rounded.to_string().as_str()).unwrap()
 }
 
+/**
+ * If the dex_price is within the allowed range, we should "ignore" it in the sense of not taking action.
+ */
+fn decimal_is_within_allowed_range(price: Decimal, allowed_range: (Decimal, Decimal)) -> bool {
+    price >= allowed_range.0 && price <= allowed_range.1
+}
+
 async fn get_token_swap_details(
     config: &Config,
     provider: &Arc<KeeperProvider>,
+    uniswap_router: &UniswapRouter,
     uniswap_factory: &UniswapFactory,
     token_pair: &TokenPair,
     // FIXME: Convert to struct?
@@ -71,9 +79,15 @@ async fn get_token_swap_details(
 
     // Compute the price based on reserve supplies
     let total_supply = supply_0 + supply_1;
-    let price_from_supplies = supply_0 / supply_1;
-    let system_coin_is_worth_more = price_from_supplies > Decimal::ONE;
-    debug!("Reserve balances.. t0={supply_0}, t1={supply_1}, price={price_from_supplies}");
+    let current_price = supply_0 / supply_1;
+
+    // If we're within the allowed range, don't do any extra math
+    if decimal_is_within_allowed_range(current_price, config.ratio_range_allowed) {
+        return (current_price, Decimal::ZERO, Decimal::ZERO, vec![]);
+    }
+
+    let system_coin_is_worth_more = current_price > Decimal::ONE;
+    debug!("Reserve balances.. t0={supply_0}, t1={supply_1}, price={current_price}");
 
     // Determine amount to buy/sell based on a goal ratio
     let goal_ratio = if system_coin_is_worth_more {
@@ -85,22 +99,33 @@ async fn get_token_swap_details(
     let expected_buy_token_supply = (total_supply / Decimal::TWO)
         + (((goal_ratio - Decimal::ONE) / Decimal::TWO.powu(2)) * total_supply);
 
-    let (price_from_supplies, quantity_to_sell, quantity_to_buy, path) =
-        if system_coin_is_worth_more {
-            let quantity_to_buy = supply_0 - expected_buy_token_supply;
-            let quantity_to_sell = quantity_to_buy;
-            let path = vec![token_pair.token_1.address, token_pair.token_0.address];
-            (price_from_supplies, quantity_to_sell, quantity_to_buy, path)
-        } else {
-            let quantity_to_buy = expected_buy_token_supply - supply_0;
-            let quantity_to_sell = quantity_to_buy;
-            let path = vec![token_pair.token_0.address, token_pair.token_1.address];
-            (price_from_supplies, quantity_to_sell, quantity_to_buy, path)
-        };
-    let resulting_ratio = (supply_0 + quantity_to_sell) / (supply_1 + quantity_to_buy);
+    let (quantity_to_buy, path_tokens) = if system_coin_is_worth_more {
+        let quantity_to_buy = supply_0 - expected_buy_token_supply;
+        let path_tokens = vec![token_pair.token_1.clone(), token_pair.token_0.clone()];
+        (quantity_to_buy, path_tokens)
+    } else {
+        let quantity_to_buy = expected_buy_token_supply - supply_0;
+        let path_tokens = vec![token_pair.token_0.clone(), token_pair.token_1.clone()];
+        (quantity_to_buy, path_tokens)
+    };
+    let outcome_ratio = (supply_0 + quantity_to_buy) / (supply_1 + quantity_to_buy);
+
+    // Determine how many tokens need to be sold to achieve this purchase amount by asking Uniswap
+    let amount_out = decimal_to_u256(quantity_to_buy, path_tokens[1].decimals);
+    let path: Vec<H160> = path_tokens.iter().map(|t| t.address).collect();
+    let get_amounts_in_result = uniswap_router
+        .get_amounts_in(amount_out, path.clone())
+        .call()
+        .await
+        .unwrap();
+    let amount_in_raw = get_amounts_in_result[0];
+    debug!("Uniswap says for amount_out={amount_out}, we need amount_in={amount_in_raw}");
+    let quantity_to_sell: Decimal = Decimal::from(amount_in_raw.as_u128())
+        / Decimal::TEN.checked_powu(path_tokens[0].decimals).unwrap();
+
     debug!("PROFITABLE TOKEN SWAP AMOUNTS, expected_resulting_supply={expected_buy_token_supply}, quantity_to_sell={quantity_to_sell}, quantity_to_buy={quantity_to_buy}, path={path:?}");
-    debug!("RESULTING RATIO, {}", resulting_ratio);
-    (price_from_supplies, quantity_to_sell, quantity_to_buy, path)
+    debug!("RESULTING RATIO, {}", outcome_ratio);
+    (current_price, quantity_to_sell, quantity_to_buy, path)
 }
 
 #[derive(Clone)]
@@ -123,14 +148,20 @@ enum KeeperAction {
 async fn determine_action_to_take_for_pair(
     config: &Config,
     provider: &Arc<KeeperProvider>,
-    _uniswap_router: &UniswapRouter,
+    uniswap_router: &UniswapRouter,
     uniswap_factory: &UniswapFactory,
     token_pair: &TokenPair,
 ) -> KeeperAction {
-    let (dex_price, amount_to_sell, amount_to_buy_min, path) =
-        get_token_swap_details(config, provider, uniswap_factory, token_pair).await;
+    let (dex_price, amount_to_sell, amount_to_buy_min, path) = get_token_swap_details(
+        config,
+        provider,
+        uniswap_router,
+        uniswap_factory,
+        token_pair,
+    )
+    .await;
 
-    if dex_price >= config.ratio_range_allowed.0 && dex_price <= config.ratio_range_allowed.1 {
+    if decimal_is_within_allowed_range(dex_price, config.ratio_range_allowed) {
         KeeperAction::None(SwapDetails {
             dex_price,
             token_to_sell: token_pair.token_0.clone(),
@@ -240,7 +271,7 @@ async fn tick_keeper_loop(
                     .get_balance(provider.address(), None)
                     .await
                     .unwrap()
-                    .as_u64();
+                    .as_u128();
                 let balance =
                     Decimal::from(balance_int) / Decimal::from(10).checked_powu(18).unwrap();
                 info!("Current wallet balance: {balance}");
