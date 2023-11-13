@@ -77,12 +77,12 @@ pub fn generate_config() -> Config {
         adapter_name: String::from("USDC"),
         adapter_uniswap_v2_address,
         ratio_range_allowed: (
-            Decimal::from_str_exact("0.99").unwrap(),
-            Decimal::from_str_exact("1.01").unwrap(),
+            Decimal::from_str_exact("0.996").unwrap(),
+            Decimal::from_str_exact("1.002").unwrap(),
         ),
         ratio_range_targets: (
             Decimal::from_str_exact("0.997").unwrap(),
-            Decimal::from_str_exact("1.003").unwrap(),
+            Decimal::from_str_exact("1.001").unwrap(),
         ),
     }
 }
