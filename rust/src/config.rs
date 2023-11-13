@@ -12,7 +12,8 @@ pub struct Config {
     pub uniswap_factory_address: Address,
     pub uniswap_fee_rate: Decimal,
     pub stability_module_address: Address,
-    pub ratio_range_allowed: (Decimal, Decimal),
+    pub ratio_range_allowed: (Decimal, Decimal), // Range where swapping is considered unprofitable
+    pub ratio_range_targets: (Decimal, Decimal), // Range where we aim to move the price to
     pub adapter_name: String,
     pub adapter_uniswap_v2_address: Address,
 }
@@ -76,6 +77,10 @@ pub fn generate_config() -> Config {
         adapter_name: String::from("USDC"),
         adapter_uniswap_v2_address,
         ratio_range_allowed: (
+            Decimal::from_str_exact("0.99").unwrap(),
+            Decimal::from_str_exact("1.01").unwrap(),
+        ),
+        ratio_range_targets: (
             Decimal::from_str_exact("0.997").unwrap(),
             Decimal::from_str_exact("1.003").unwrap(),
         ),
