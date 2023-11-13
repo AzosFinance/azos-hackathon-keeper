@@ -328,19 +328,30 @@ async fn main() -> Result<()> {
     let uniswap_adapter =
         AzosAdapterUniswapV2::new(config.adapter_uniswap_v2_address, provider.clone());
 
+    let delay_between_checks = time::Duration::from_millis(config.delay_between_checks_ms as u64);
+
+    // Track which block we've last seen to only handle blocks once
+    let mut last_block_processed: u64 = 0;
+
     // Core loop
     info!("Configuration loaded, initiating keeper loop");
-    let delay_between_checks = time::Duration::from_millis(config.delay_between_checks_ms as u64);
     loop {
-        tick_keeper_loop(
-            &config,
-            &provider,
-            &uniswap_router,
-            &uniswap_factory,
-            &uniswap_adapter,
-            &stability_module,
-        )
-        .await;
+        let current_block = provider.get_block_number().await.unwrap().as_u64();
+        if current_block > last_block_processed {
+            last_block_processed = current_block;
+            info!("Unseen block, ticking keeper process, block_number=${current_block}");
+            tick_keeper_loop(
+                &config,
+                &provider,
+                &uniswap_router,
+                &uniswap_factory,
+                &uniswap_adapter,
+                &stability_module,
+            )
+            .await;
+        } else {
+            info!("Skipping this block, as it has already been handled, block_number=${current_block}");
+        }
 
         info!("Sleeping for {}ms", config.delay_between_checks_ms);
         thread::sleep(delay_between_checks);
