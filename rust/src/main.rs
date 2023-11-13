@@ -29,33 +29,6 @@ type UniswapFactory = UniswapV2Factory<KeeperProvider>;
 type AzosUniswapAdapter = AzosAdapterUniswapV2<KeeperProvider>;
 type StabilityModule = AzosStabilityModule<KeeperProvider>;
 
-async fn get_dex_price(uniswap_router: &UniswapRouter, token_pair: &TokenPair) -> Decimal {
-    let TokenPair {
-        token_0, token_1, ..
-    } = token_pair;
-
-    // FIXME: Don't use get_amounts_out maybe, so that we don't calculate it with the fee?
-    let request = uniswap_router.get_amounts_out(
-        U256::from(1) * U256::exp10(token_0.decimals as usize),
-        vec![token_1.address, token_0.address],
-    );
-    let results = request.call().await.unwrap();
-    let price = Decimal::from(results[1].as_u64())
-        / Decimal::from(10)
-            .checked_powu(token_pair.token_1.decimals)
-            .unwrap();
-
-    info!("{}/{} price={}", token_0.symbol, token_1.symbol, price);
-    info!(
-        "{}/{} price={}",
-        token_1.symbol,
-        token_0.symbol,
-        Decimal::ONE / price
-    );
-
-    price
-}
-
 fn get_swap_deadline_from_now() -> U256 {
     let future = SystemTime::now() + Duration::from_secs(120);
     let future_timestamp = future
@@ -76,7 +49,8 @@ async fn get_token_swap_details(
     provider: &Arc<KeeperProvider>,
     uniswap_factory: &UniswapFactory,
     token_pair: &TokenPair,
-) -> (Decimal, Decimal, Vec<Address>) {
+    // FIXME: Convert to struct?
+) -> (Decimal, Decimal, Decimal, Vec<Address>) {
     // Get the pair from the factory
     let uniswap_pair_address_request =
         uniswap_factory.get_pair(token_pair.token_0.address, token_pair.token_1.address);
@@ -111,21 +85,22 @@ async fn get_token_swap_details(
     let expected_buy_token_supply = (total_supply / Decimal::TWO)
         + (((goal_ratio - Decimal::ONE) / Decimal::TWO.powu(2)) * total_supply);
 
-    let (quantity_to_sell, quantity_to_buy, path) = if system_coin_is_worth_more {
-        let quantity_to_buy = supply_0 - expected_buy_token_supply;
-        let quantity_to_sell = quantity_to_buy;
-        let path = vec![token_pair.token_1.address, token_pair.token_0.address];
-        (quantity_to_sell, quantity_to_buy, path)
-    } else {
-        let quantity_to_buy = expected_buy_token_supply - supply_0;
-        let quantity_to_sell = quantity_to_buy;
-        let path = vec![token_pair.token_0.address, token_pair.token_1.address];
-        (quantity_to_sell, quantity_to_buy, path)
-    };
+    let (price_from_supplies, quantity_to_sell, quantity_to_buy, path) =
+        if system_coin_is_worth_more {
+            let quantity_to_buy = supply_0 - expected_buy_token_supply;
+            let quantity_to_sell = quantity_to_buy;
+            let path = vec![token_pair.token_1.address, token_pair.token_0.address];
+            (price_from_supplies, quantity_to_sell, quantity_to_buy, path)
+        } else {
+            let quantity_to_buy = expected_buy_token_supply - supply_0;
+            let quantity_to_sell = quantity_to_buy;
+            let path = vec![token_pair.token_0.address, token_pair.token_1.address];
+            (price_from_supplies, quantity_to_sell, quantity_to_buy, path)
+        };
     let resulting_ratio = (supply_0 + quantity_to_sell) / (supply_1 + quantity_to_buy);
     debug!("PROFITABLE TOKEN SWAP AMOUNTS, expected_resulting_supply={expected_buy_token_supply}, quantity_to_sell={quantity_to_sell}, quantity_to_buy={quantity_to_buy}, path={path:?}");
     debug!("RESULTING RATIO, {}", resulting_ratio);
-    (quantity_to_sell, quantity_to_buy, path)
+    (price_from_supplies, quantity_to_sell, quantity_to_buy, path)
 }
 
 #[derive(Clone)]
@@ -148,11 +123,12 @@ enum KeeperAction {
 async fn determine_action_to_take_for_pair(
     config: &Config,
     provider: &Arc<KeeperProvider>,
-    uniswap_router: &UniswapRouter,
+    _uniswap_router: &UniswapRouter,
     uniswap_factory: &UniswapFactory,
     token_pair: &TokenPair,
 ) -> KeeperAction {
-    let dex_price = get_dex_price(uniswap_router, token_pair).await;
+    let (dex_price, amount_to_sell, amount_to_buy_min, path) =
+        get_token_swap_details(config, provider, uniswap_factory, token_pair).await;
 
     if dex_price >= config.ratio_range_allowed.0 && dex_price <= config.ratio_range_allowed.1 {
         KeeperAction::None(SwapDetails {
@@ -165,8 +141,6 @@ async fn determine_action_to_take_for_pair(
         })
     } else if dex_price > Decimal::ZERO {
         // System coin is worth more than stable coin
-        let (amount_to_sell, amount_to_buy_min, path) =
-            get_token_swap_details(config, provider, uniswap_factory, token_pair).await;
         KeeperAction::ExpandAndBuy(SwapDetails {
             dex_price,
             token_to_sell: token_pair.token_1.clone(),
@@ -177,8 +151,6 @@ async fn determine_action_to_take_for_pair(
         })
     } else {
         // Stable coin is worth more than system coin
-        let (amount_to_sell, amount_to_buy_min, path) =
-            get_token_swap_details(config, provider, uniswap_factory, token_pair).await;
         KeeperAction::ContractAndSell(SwapDetails {
             dex_price,
             token_to_sell: token_pair.token_0.clone(),
