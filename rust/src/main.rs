@@ -2,6 +2,7 @@ mod config;
 mod contracts;
 mod token;
 
+use anyhow::Result;
 use config::Config;
 use contracts::azos_adapter_uniswap_v2::AzosAdapterUniswapV2;
 use contracts::azos_stability_module::AzosStabilityModule;
@@ -16,7 +17,6 @@ use ethers::providers::{Http, Provider};
 use ethers::utils::format_bytes32_string;
 use log::{debug, info};
 use rust_decimal::{Decimal, MathematicalOps};
-use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::{thread, time};
@@ -24,6 +24,9 @@ use token::{Token, TokenPair};
 
 type UniswapRouter = UniswapV2Router02<Provider<Http>>;
 type UniswapFactory = UniswapV2Factory<Provider<Http>>;
+type AzosUniswapAdapter = AzosAdapterUniswapV2<Provider<Http>>;
+type StabilityModule = AzosStabilityModule<Provider<Http>>;
+type KeeperProvider = SignerMiddleware<Arc<Provider<Http>>, LocalWallet>;
 
 async fn get_dex_price(uniswap_router: &UniswapRouter, token_pair: &TokenPair) -> Decimal {
     let TokenPair {
@@ -67,10 +70,9 @@ fn decimal_to_u256(dec: Decimal, decimals: u64) -> U256 {
 }
 
 // FIXME: Ensure we're always using the right order of token0 and token1 for sorting
-// Note: token_to_sell must always be larger than token_to_buy for this function
 async fn get_profitable_token_swap_amounts(
     config: &Config,
-    provider: Arc<Provider<Http>>,
+    provider: &KeeperProvider,
     uniswap_factory: &UniswapFactory,
     token_to_sell: &Token,
     token_to_buy: &Token,
@@ -79,7 +81,7 @@ async fn get_profitable_token_swap_amounts(
     let uniswap_pair_address_request =
         uniswap_factory.get_pair(token_to_sell.address, token_to_buy.address);
     let uniswap_pair_address = uniswap_pair_address_request.call().await.unwrap();
-    let pair = UniswapV2Pair::new(uniswap_pair_address, provider.clone());
+    let pair = UniswapV2Pair::new(uniswap_pair_address, provider.inner().clone());
 
     // Compute price from reserve supplies
     let (raw_supply1, raw_supply2, _timestamp) = pair.get_reserves().call().await.unwrap();
@@ -91,24 +93,19 @@ async fn get_profitable_token_swap_amounts(
         / Decimal::from(10)
             .checked_powu(token_to_buy.decimals)
             .unwrap();
+
     let price_from_supplies = supply1 / supply2;
     debug!("Reserve balances.. t0={supply1}, t1={supply2}, price={price_from_supplies}");
 
-    // Attempt 1 using mid-point
-    // let distance = supply1 - supply2;
-    // let half_distance = distance / Decimal::from(2);
-    // let quantity_to_buy = half_distance;
-    // let quantity_to_expect = quantity_to_buy;
-
-    // Attempt 2 using goal position
+    // Determine amount to buy/sell based on a goal ratio
     let total_supply = supply1 + supply2;
     let goal_ratio = config.ratio_range_allowed.1;
-    let expected_token1_supply = (total_supply / Decimal::TWO)
+    let expected_buy_token_supply = (total_supply / Decimal::TWO)
         + (((goal_ratio - Decimal::ONE) / Decimal::TWO.powu(2)) * total_supply);
-    let quantity_to_buy = supply1 - expected_token1_supply;
+    let quantity_to_buy = supply1 - expected_buy_token_supply;
     let quantity_to_expect = quantity_to_buy;
     let resulting_ratio = (supply1 - quantity_to_buy) / (supply2 + quantity_to_buy);
-    debug!("PROFITABLE TOKEN SWAP AMOUNTS, expected_resulting_supply={expected_token1_supply}, quantity_to_buy={quantity_to_buy}, quantity_to_expect={quantity_to_expect}");
+    debug!("PROFITABLE TOKEN SWAP AMOUNTS, expected_resulting_supply={expected_buy_token_supply}, quantity_to_buy={quantity_to_buy}, quantity_to_expect={quantity_to_expect}");
     debug!("RESULTING RATIO, {}", resulting_ratio);
 
     (
@@ -118,8 +115,191 @@ async fn get_profitable_token_swap_amounts(
     )
 }
 
+#[derive(Clone)]
+struct SwapDetails {
+    dex_price: Decimal,
+    token_to_sell: Token,
+    amount_to_sell: Decimal,
+    token_to_buy: Token,
+    amount_to_buy_min: Decimal,
+    path: Vec<Address>,
+}
+
+#[derive(Clone)]
+enum KeeperAction {
+    ExpandAndBuy(SwapDetails),
+    ContractAndSell(SwapDetails),
+    None(SwapDetails),
+}
+
+async fn determine_action_to_take_for_pair(
+    config: &Config,
+    provider: &KeeperProvider,
+    uniswap_router: &UniswapRouter,
+    uniswap_factory: &UniswapFactory,
+    token_pair: &TokenPair,
+) -> KeeperAction {
+    let dex_price = get_dex_price(uniswap_router, token_pair).await;
+
+    if dex_price >= config.ratio_range_allowed.0 && dex_price <= config.ratio_range_allowed.1 {
+        KeeperAction::None(SwapDetails {
+            dex_price,
+            token_to_sell: token_pair.token_0.clone(),
+            amount_to_sell: Decimal::ZERO,
+            token_to_buy: token_pair.token_1.clone(),
+            amount_to_buy_min: Decimal::ZERO,
+            path: vec![],
+        })
+    } else if dex_price > Decimal::ZERO {
+        // System coin is worth more than stable coin
+        let (amount_to_sell, amount_to_buy_min, path) = get_profitable_token_swap_amounts(
+            config,
+            provider,
+            uniswap_factory,
+            &token_pair.token_1,
+            &token_pair.token_0,
+        )
+        .await;
+        KeeperAction::ExpandAndBuy(SwapDetails {
+            dex_price,
+            token_to_sell: token_pair.token_1.clone(),
+            amount_to_sell,
+            token_to_buy: token_pair.token_1.clone(),
+            amount_to_buy_min,
+            path,
+        })
+    } else {
+        // Stable coin is worth more than system coin
+        let (amount_to_sell, amount_to_buy_min, path) = get_profitable_token_swap_amounts(
+            config,
+            provider,
+            uniswap_factory,
+            &token_pair.token_0,
+            &token_pair.token_1,
+        )
+        .await;
+        KeeperAction::ContractAndSell(SwapDetails {
+            dex_price,
+            token_to_sell: token_pair.token_0.clone(),
+            amount_to_sell,
+            token_to_buy: token_pair.token_0.clone(),
+            amount_to_buy_min,
+            path,
+        })
+    }
+}
+
+fn generate_delegate_call_data(
+    config: &Config,
+    uniswap_adapter: &AzosAdapterUniswapV2<Provider<Http>>,
+    swap_details: &SwapDetails,
+) -> Bytes {
+    let deadline = get_swap_deadline_from_now();
+    let adapter_swap_args: [EthersToken; 5] = vec![
+        EthersToken::Uint(decimal_to_u256(
+            swap_details.amount_to_sell,
+            swap_details.token_to_sell.decimals,
+        )), // ZAI
+        EthersToken::Uint(decimal_to_u256(
+            swap_details.amount_to_buy_min,
+            swap_details.token_to_buy.decimals,
+        )), // USDC
+        EthersToken::Array(
+            swap_details
+                .path
+                .iter()
+                .map(|a| EthersToken::Address(*a))
+                .collect(),
+        ), // Path
+        EthersToken::Uint(deadline),                         // Deadline
+        EthersToken::Address(config.uniswap_router_address), // Router
+    ]
+    .try_into()
+    .unwrap();
+    debug!("adapter_swap_args={adapter_swap_args:?}");
+    let adapter_swap_data: Bytes = encode(&adapter_swap_args).into();
+    let adapter_swap_call = uniswap_adapter.swap(adapter_swap_data);
+    adapter_swap_call.calldata().unwrap()
+}
+
+async fn tick_keeper_loop(
+    config: &Config,
+    provider: &KeeperProvider,
+    uniswap_router: &UniswapRouter,
+    uniswap_factory: &UniswapFactory,
+    uniswap_adapter: &AzosUniswapAdapter,
+    stability_module: &StabilityModule,
+) {
+    let adapter_name = format_bytes32_string(config.adapter_name.as_str()).unwrap();
+    for token_pair in &config.token_pairs {
+        let action_to_take = determine_action_to_take_for_pair(
+            config,
+            provider,
+            uniswap_router,
+            uniswap_factory,
+            token_pair,
+        )
+        .await;
+        match &action_to_take {
+            KeeperAction::ContractAndSell(swap_details)
+            | KeeperAction::ExpandAndBuy(swap_details) => {
+                // Do the right contract/expand call
+                let delegate_call_data =
+                    generate_delegate_call_data(config, uniswap_adapter, swap_details);
+
+                let stability_module_call = if let KeeperAction::ContractAndSell(_) =
+                    &action_to_take
+                {
+                    debug!("CONTRACT_AND_SELL, adapter_name={adapter_name:?}, data={delegate_call_data}");
+                    stability_module.contract_and_sell(adapter_name, delegate_call_data)
+                } else {
+                    debug!("EXPAND_AND_BUY CALL, adapter_name={adapter_name:?}, data={delegate_call_data}");
+                    stability_module.expand_and_buy(
+                        adapter_name,
+                        delegate_call_data,
+                        decimal_to_u256(
+                            swap_details.amount_to_sell,
+                            swap_details.token_to_sell.decimals,
+                        ),
+                    )
+                };
+
+                // Wallet ethereum balance
+                let balance_int = provider
+                    .get_balance(provider.address(), None)
+                    .await
+                    .unwrap()
+                    .as_u64();
+                let balance =
+                    Decimal::from(balance_int) / Decimal::from(10).checked_powu(18).unwrap();
+                info!("Current wallet balance: {balance}");
+
+                // Perform the transaction
+                // keeper_client
+                //     .sign_transaction(&stability_module_call.tx)
+                //     .await
+                //     .unwrap();
+                let error = stability_module_call.send().await.unwrap_err();
+                println!("Error during function execution: {}", error);
+                let contract_revert: AzosStabilityModuleErrors =
+                    error.decode_contract_revert().unwrap();
+                println!("Contract revert: {:?}", contract_revert);
+
+                // TODO: Save that we executed an action this block and can skip subsequent ones for this block..
+                // TODO: Wait for the outcome?
+            }
+            KeeperAction::None(swap_details) => {
+                info!(
+                    "There was no favourable swap to make for dex_price of {}",
+                    swap_details.dex_price
+                );
+            }
+        }
+    }
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     env_logger::init();
     dotenv::dotenv().ok();
 
@@ -133,8 +313,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse::<LocalWallet>()?
         // FIXME: Make this chain configured from env var
         .with_chain_id(Chain::Sepolia);
-    let keeper_wallet_address: Address = keeper_wallet.address();
-    let _client = SignerMiddleware::new(provider.clone(), keeper_wallet.clone());
 
     // Uniswap
     let uniswap_router = UniswapV2Router02::new(config.uniswap_router_address, provider.clone());
@@ -146,137 +324,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let uniswap_adapter =
         AzosAdapterUniswapV2::new(config.adapter_uniswap_v2_address, provider.clone());
 
+    let provider = SignerMiddleware::new(provider.clone(), keeper_wallet.clone());
+
     // Core loop
     info!("Configuration loaded, initiating keeper loop");
     let delay_between_checks = time::Duration::from_millis(config.delay_between_checks_ms as u64);
     loop {
-        for token_pair in &config.token_pairs {
-            // Price is
-            let dex_price = get_dex_price(&uniswap_router, token_pair).await;
-
-            // Adapter name
-            let adapter_name = format_bytes32_string(config.adapter_name.as_str()).unwrap();
-            // let mut adapter_name = [0u8; 32];
-            // let adapter_name_string = config.adapter_name.clone();
-            // adapter_name[..adapter_name_string.as_bytes().len()]
-            //     .copy_from_slice(adapter_name_string.as_bytes());
-
-            let deadline = get_swap_deadline_from_now();
-
-            // Determine action to take
-            let maybe_tx_func = match dex_price.cmp(&Decimal::ZERO) {
-                Ordering::Greater => {
-                    // Greater means ZAI (token1) is worth more than USDC (token0), so we should mint more ZAI (token1) and buy USDC (token0) via expand_and_buy
-                    if dex_price < config.ratio_range_allowed.0 {
-                        // Price is within ignore range, noop
-                        None
-                    } else {
-                        let (amount_in, amount_out_min, path) = get_profitable_token_swap_amounts(
-                            &config,
-                            provider.clone(),
-                            &uniswap_factory,
-                            &token_pair.token_1, // ZAI
-                            &token_pair.token_0, // USDC
-                        )
-                        .await;
-
-                        // Create the arguments to be converted to data for delegate call
-                        // (uint256 amountIn, uint256 amountOutMin, address[] memory path, uint256 deadline, address router)
-                        let adapter_swap_args: [EthersToken; 5] = vec![
-                            EthersToken::Uint(decimal_to_u256(
-                                amount_in,
-                                token_pair.token_1.decimals,
-                            )), // ZAI
-                            EthersToken::Uint(decimal_to_u256(
-                                amount_out_min,
-                                token_pair.token_0.decimals,
-                            )), // USDC
-                            EthersToken::Array(
-                                path.iter().map(|a| EthersToken::Address(*a)).collect(),
-                            ), // Path
-                            EthersToken::Uint(deadline), // Deadline
-                            EthersToken::Address(uniswap_router.address()), // Router
-                        ]
-                        .try_into()
-                        .unwrap();
-                        debug!("adapter_swap_args={adapter_swap_args:?}");
-                        let adapter_swap_data: Bytes = encode(&adapter_swap_args).into();
-                        let adapter_swap_call = uniswap_adapter.swap(adapter_swap_data);
-                        let delegate_call_data = adapter_swap_call.calldata().unwrap();
-
-                        debug!("EXPAND_AND_BUY CALL, adapter_name={adapter_name:?}, data={delegate_call_data}");
-
-                        Some(stability_module.expand_and_buy(
-                            adapter_name,
-                            delegate_call_data,
-                            decimal_to_u256(amount_in, token_pair.token_1.decimals),
-                        ))
-                    }
-                }
-                Ordering::Less => {
-                    // Less means USDC (token0) is worth more than ZAI (token1), so we should be buying ZAI (token1) and burning it via contract_and_sell
-                    if dex_price > config.ratio_range_allowed.1 {
-                        // Price is within ignore range, noop
-                        None
-                    } else {
-                        let (amount_in, amount_out_min, path) = get_profitable_token_swap_amounts(
-                            &config,
-                            provider.clone(),
-                            &uniswap_factory,
-                            &token_pair.token_0, // USDC
-                            &token_pair.token_1, // ZAI
-                        )
-                        .await;
-
-                        let swap_exact_tokens_for_tokens = uniswap_router
-                            .swap_exact_tokens_for_tokens(
-                                decimal_to_u256(amount_in, token_pair.token_0.decimals), // USDC
-                                decimal_to_u256(amount_out_min, token_pair.token_1.decimals), // ZAI
-                                path.clone(),
-                                keeper_wallet_address,
-                                deadline,
-                            );
-                        let calldata = swap_exact_tokens_for_tokens.calldata().unwrap();
-                        debug!("swap_exact_tokens_for_tokens data={calldata}",);
-                        info!("CONTRACT_AND_SELL CALL, adapter_name: {adapter_name:?}, amount_in: {amount_in}, amount_out_min: {amount_out_min}, path: {path:?}, to: {keeper_wallet_address}, deadline: {deadline}");
-                        Some(stability_module.contract_and_sell(adapter_name, calldata))
-                    }
-                }
-                _ => {
-                    // They are equal, no action to take
-                    None
-                }
-            };
-
-            match maybe_tx_func {
-                None => {
-                    // No favourable swap to make
-                    info!("There was no favourable swap to make for dex_price of {dex_price}");
-                }
-                Some(tx_func) => {
-                    // Wallet ethereum balance
-                    let balance_int = provider
-                        .get_balance(keeper_wallet.address(), None)
-                        .await
-                        .unwrap()
-                        .as_u64();
-                    let balance =
-                        Decimal::from(balance_int) / Decimal::from(10).checked_powu(18).unwrap();
-                    info!("Current wallet balance: {balance}");
-
-                    // Perform the transaction
-                    keeper_wallet.sign_transaction_sync(&tx_func.tx).unwrap();
-                    let error = tx_func.send().await.unwrap_err();
-                    println!("Error during function execution: {}", error);
-                    let contract_revert: AzosStabilityModuleErrors =
-                        error.decode_contract_revert().unwrap();
-                    println!("Contract revert: {:?}", contract_revert);
-
-                    // TODO: Save that we executed an action this block and can skip subsequent ones for this block..
-                    // TODO: Wait for the outcome?
-                }
-            }
-        }
+        tick_keeper_loop(
+            &config,
+            &provider,
+            &uniswap_router,
+            &uniswap_factory,
+            &uniswap_adapter,
+            &stability_module,
+        )
+        .await;
 
         info!("Sleeping for {}ms", config.delay_between_checks_ms);
         thread::sleep(delay_between_checks);
