@@ -16,7 +16,7 @@ use ethers::abi::{encode, Token as EthersToken};
 use ethers::prelude::*;
 use ethers::providers::{Http, Provider};
 use ethers::utils::format_bytes32_string;
-use log::{debug, info};
+use log::{debug, error, info};
 use rust_decimal::{Decimal, MathematicalOps};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -279,19 +279,29 @@ async fn tick_keeper_loop(
                 // Broadcast the transaction
                 let call_result = stability_module_call.send().await;
                 match call_result {
-                    Ok(_) => {
-                        info!("Successful transaction!");
+                    Ok(pending_tx) => {
+                        let tx_result = pending_tx
+                            .confirmations(config.tx_confirmations_required)
+                            .await;
+                        match tx_result {
+                            Ok(tx) => {
+                                let tx_hash = tx.unwrap().transaction_hash;
+                                info!("Successful transaction!  tx_hash={tx_hash}");
+                            }
+                            Err(error) => {
+                                error!("Error during transaction: {}", error);
+                            }
+                        }
                     }
-                    Err(error) => {
-                        println!("Error during function execution: {}", error);
-                        let contract_revert: AzosStabilityModuleErrors =
-                            error.decode_contract_revert().unwrap();
-                        println!("Contract revert: {:?}", contract_revert);
+                    Err(contract_error) => {
+                        error!("Error during function call: {contract_error}");
+                        let contract_revert_result =
+                            contract_error.decode_contract_revert::<AzosStabilityModuleErrors>();
+                        if let Some(revert_reason) = contract_revert_result {
+                            error!("Contract revert reason: {:?}", revert_reason);
+                        }
                     }
                 }
-
-                // TODO: Save that we executed an action this block and can skip subsequent ones for this block..
-                // TODO: Wait for the outcome?
             }
             KeeperAction::None(swap_details) => {
                 info!(
