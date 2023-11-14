@@ -303,11 +303,28 @@ async fn tick_keeper_loop(
     }
 }
 
+fn show_banner() {
+    let lines = vec![
+        "  ######  ######  ######  ######",
+        "  ##  ##      ##  ##  ##  ##",
+        "  ######  ######  ##  ##  ######",
+        "  ##  ##  ##      ##  ##      ##",
+        "  ##  ##  ######  ######  ######",
+        "",
+        "Azos Keeper ",
+        "",
+    ];
+    for line in lines {
+        info!("{line}");
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
     dotenv::dotenv().ok();
 
+    show_banner();
     info!("Starting up..");
     let config = config::generate_config();
 
