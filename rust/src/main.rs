@@ -277,9 +277,11 @@ async fn tick_keeper_loop(
                 info!("Current wallet balance: {balance}");
 
                 // Broadcast the transaction
+                info!("Calling function..");
                 let call_result = stability_module_call.send().await;
                 match call_result {
                     Ok(pending_tx) => {
+                        info!("Awaiting {} confirmations..", config.tx_confirmations_required);
                         let tx_result = pending_tx
                             .confirmations(config.tx_confirmations_required)
                             .await;
