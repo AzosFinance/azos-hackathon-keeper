@@ -57,7 +57,6 @@ async fn get_token_swap_details(
     uniswap_router: &UniswapRouter,
     uniswap_factory: &UniswapFactory,
     token_pair: &TokenPair,
-    // FIXME: Convert to struct?
 ) -> (Decimal, Decimal, Decimal, Vec<Address>) {
     // Get the pair from the factory
     let uniswap_pair_address_request =
@@ -66,7 +65,6 @@ async fn get_token_swap_details(
     let pair = UniswapV2Pair::new(uniswap_pair_address, provider.clone());
 
     // Compute price from reserve supplies
-    // FIXME: Make these supply0 and 1 in order
     let (raw_supply_0, raw_supply_1, _timestamp) = pair.get_reserves().call().await.unwrap();
     let supply_0 = Decimal::from(raw_supply_0)
         / Decimal::from(10)
