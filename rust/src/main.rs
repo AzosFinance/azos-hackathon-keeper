@@ -1,6 +1,7 @@
 mod config;
 mod contracts;
-mod token;
+mod utils;
+mod types;
 
 use anyhow::Result;
 use config::Config;
@@ -19,37 +20,18 @@ use ethers::utils::format_bytes32_string;
 use log::{debug, error, info};
 use rust_decimal::{Decimal, MathematicalOps};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 use std::{thread, time};
-use token::{Token, TokenPair};
+use utils::time::get_swap_deadline_from_now;
+use utils::types::{decimal_to_u256, decimal_is_within_allowed_range};
+use types::keeper::KeeperAction;
+use types::swap::SwapDetails;
+use types::token::TokenPair;
 
 type KeeperProvider = SignerMiddleware<Provider<Http>, LocalWallet>;
 type UniswapRouter = UniswapV2Router02<KeeperProvider>;
 type UniswapFactory = UniswapV2Factory<KeeperProvider>;
 type AzosUniswapAdapter = AzosAdapterUniswapV2<KeeperProvider>;
 type StabilityModule = AzosStabilityModule<KeeperProvider>;
-
-fn get_swap_deadline_from_now() -> U256 {
-    let future = SystemTime::now() + Duration::from_secs(120);
-    let future_timestamp = future
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    U256::from(future_timestamp)
-}
-
-fn decimal_to_u256(dec: Decimal, decimals: u64) -> U256 {
-    let rounded = (dec * Decimal::from(10).checked_powu(decimals).unwrap()).floor();
-    debug!("decimal_to_u256, dec={dec}, decimals={decimals}, rounded={rounded}");
-    U256::from_dec_str(rounded.to_string().as_str()).unwrap()
-}
-
-/**
- * If the dex_price is within the allowed range, we should "ignore" it in the sense of not taking action.
- */
-fn decimal_is_within_allowed_range(price: Decimal, allowed_range: (Decimal, Decimal)) -> bool {
-    price >= allowed_range.0 && price <= allowed_range.1
-}
 
 async fn get_token_swap_details(
     config: &Config,
@@ -124,23 +106,6 @@ async fn get_token_swap_details(
     debug!("PROFITABLE TOKEN SWAP AMOUNTS, expected_resulting_supply={expected_buy_token_supply}, quantity_to_sell={quantity_to_sell}, quantity_to_buy={quantity_to_buy}, path={path:?}");
     debug!("RESULTING RATIO, {}", outcome_ratio);
     (current_price, quantity_to_sell, quantity_to_buy, path)
-}
-
-#[derive(Clone)]
-struct SwapDetails {
-    dex_price: Decimal,
-    token_to_sell: Token,
-    amount_to_sell: Decimal,
-    token_to_buy: Token,
-    amount_to_buy_min: Decimal,
-    path: Vec<Address>,
-}
-
-#[derive(Clone)]
-enum KeeperAction {
-    ExpandAndBuy(SwapDetails),
-    ContractAndSell(SwapDetails),
-    None(SwapDetails),
 }
 
 async fn determine_action_to_take_for_pair(
