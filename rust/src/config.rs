@@ -77,7 +77,7 @@ pub fn generate_config() -> Config {
         stability_module_address,
         adapter_name: String::from("USDC"),
         adapter_uniswap_v2_address,
-        tx_confirmations_required: 1,
+        tx_confirmations_required: 2,
         ratio_range_allowed: (
             Decimal::from_str_exact("0.996").unwrap(),
             Decimal::from_str_exact("1.002").unwrap(),
