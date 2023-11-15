@@ -1,7 +1,7 @@
 mod config;
 mod contracts;
-mod utils;
 mod types;
+mod utils;
 
 use anyhow::Result;
 use config::Config;
@@ -21,11 +21,11 @@ use log::{debug, error, info};
 use rust_decimal::{Decimal, MathematicalOps};
 use std::sync::Arc;
 use std::{thread, time};
-use utils::time::get_swap_deadline_from_now;
-use utils::types::{decimal_to_u256, decimal_is_within_allowed_range};
 use types::keeper::KeeperAction;
 use types::swap::SwapDetails;
 use types::token::TokenPair;
+use utils::decimal::{decimal_is_within_allowed_range, decimal_to_u256};
+use utils::time::get_swap_deadline_from_now;
 
 type KeeperProvider = SignerMiddleware<Provider<Http>, LocalWallet>;
 type UniswapRouter = UniswapV2Router02<KeeperProvider>;
@@ -244,7 +244,10 @@ async fn tick_keeper_loop(
                 let call_result = stability_module_call.send().await;
                 match call_result {
                     Ok(pending_tx) => {
-                        info!("Awaiting {} confirmations..", config.tx_confirmations_required);
+                        info!(
+                            "Awaiting {} confirmations..",
+                            config.tx_confirmations_required
+                        );
                         let tx_result = pending_tx
                             .confirmations(config.tx_confirmations_required)
                             .await;

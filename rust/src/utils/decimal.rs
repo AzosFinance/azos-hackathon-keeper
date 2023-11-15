@@ -8,7 +8,6 @@ pub fn decimal_to_u256(dec: Decimal, decimals: u64) -> U256 {
     U256::from_dec_str(rounded.to_string().as_str()).unwrap()
 }
 
-
 /**
  * If the dex_price is within the allowed range, we should "ignore" it in the sense of not taking action.
  */
