@@ -189,6 +189,79 @@ fn generate_delegate_call_data(
     adapter_swap_call.calldata().unwrap()
 }
 
+type StabilityModuleCall = FunctionCall<Arc<KeeperProvider>, KeeperProvider, ()>;
+
+fn generate_stability_module_call(
+    config: &Config,
+    stability_module: &StabilityModule,
+    action_to_take: &KeeperAction,
+    swap_details: &SwapDetails,
+    delegate_call_data: Bytes,
+) -> StabilityModuleCall {
+    let adapter_name = format_bytes32_string(config.adapter_name.as_str()).unwrap();
+    let adapter_name_as_hex = adapter_name.encode_hex();
+
+    if let KeeperAction::ContractAndSell(_) = &action_to_take {
+        debug!(
+            "CONTRACT_AND_SELL, adapter_name={adapter_name_as_hex:?}, data={delegate_call_data}"
+        );
+        stability_module.contract_and_sell(adapter_name, delegate_call_data)
+    } else {
+        let mint_amount = decimal_to_u256(
+            swap_details.amount_to_sell,
+            swap_details.token_to_sell.decimals,
+        );
+        debug!("EXPAND_AND_BUY CALL, adapter_name={adapter_name_as_hex:?}, data={delegate_call_data}, mint_amount={mint_amount}");
+        stability_module.expand_and_buy(adapter_name, delegate_call_data, mint_amount)
+    }
+}
+
+type StabilityModuleCallResult<'a> =
+    Result<PendingTransaction<'a, Http>, ContractError<KeeperProvider>>;
+
+async fn wait_for_stabillity_module_call<'a>(
+    config: &Config,
+    call_result: StabilityModuleCallResult<'a>,
+) {
+    match call_result {
+        Ok(pending_tx) => {
+            info!(
+                "Awaiting {} confirmations..",
+                config.tx_confirmations_required
+            );
+            let tx_result = pending_tx
+                .confirmations(config.tx_confirmations_required)
+                .await;
+            match tx_result {
+                Ok(tx) => {
+                    let tx_hash = tx.unwrap().transaction_hash;
+                    info!("Successful transaction!  tx_hash={tx_hash}");
+                }
+                Err(error) => {
+                    error!("Error during transaction: {}", error);
+                }
+            }
+        }
+        Err(contract_error) => {
+            error!("Error during function call: {contract_error}");
+            let contract_revert_result =
+                contract_error.decode_contract_revert::<AzosStabilityModuleErrors>();
+            if let Some(revert_reason) = contract_revert_result {
+                error!("Contract revert reason: {:?}", revert_reason);
+            }
+        }
+    }
+}
+
+async fn get_wallet_balance(provider: &KeeperProvider) -> Decimal {
+    let balance_int = provider
+        .get_balance(provider.address(), None)
+        .await
+        .unwrap()
+        .as_u128();
+    Decimal::from(balance_int) / Decimal::from(10).checked_powu(18).unwrap()
+}
+
 async fn tick_keeper_loop(
     config: &Config,
     provider: &Arc<KeeperProvider>,
@@ -197,7 +270,6 @@ async fn tick_keeper_loop(
     uniswap_adapter: &AzosUniswapAdapter,
     stability_module: &StabilityModule,
 ) {
-    let adapter_name = format_bytes32_string(config.adapter_name.as_str()).unwrap();
     for token_pair in &config.token_pairs {
         let action_to_take = determine_action_to_take_for_pair(
             config,
@@ -207,69 +279,28 @@ async fn tick_keeper_loop(
             token_pair,
         )
         .await;
-        match &action_to_take {
+        match action_to_take.clone() {
             KeeperAction::ContractAndSell(swap_details)
             | KeeperAction::ExpandAndBuy(swap_details) => {
                 // Do the right contract/expand call
                 let delegate_call_data =
-                    generate_delegate_call_data(config, uniswap_adapter, swap_details);
-
-                let adapter_name_as_hex = adapter_name.encode_hex();
-                let stability_module_call = if let KeeperAction::ContractAndSell(_) =
-                    &action_to_take
-                {
-                    debug!("CONTRACT_AND_SELL, adapter_name={adapter_name_as_hex:?}, data={delegate_call_data}");
-                    stability_module.contract_and_sell(adapter_name, delegate_call_data)
-                } else {
-                    let mint_amount = decimal_to_u256(
-                        swap_details.amount_to_sell,
-                        swap_details.token_to_sell.decimals,
-                    );
-                    debug!("EXPAND_AND_BUY CALL, adapter_name={adapter_name_as_hex:?}, data={delegate_call_data}, mint_amount={mint_amount}");
-                    stability_module.expand_and_buy(adapter_name, delegate_call_data, mint_amount)
-                };
+                    generate_delegate_call_data(config, uniswap_adapter, &swap_details);
+                let stability_module_call = generate_stability_module_call(
+                    config,
+                    stability_module,
+                    &action_to_take,
+                    &swap_details,
+                    delegate_call_data,
+                );
 
                 // Wallet ethereum balance
-                let balance_int = provider
-                    .get_balance(provider.address(), None)
-                    .await
-                    .unwrap()
-                    .as_u128();
-                let balance =
-                    Decimal::from(balance_int) / Decimal::from(10).checked_powu(18).unwrap();
+                let balance = get_wallet_balance(provider).await;
                 info!("Current wallet balance: {balance}");
 
                 // Broadcast the transaction
                 info!("Calling function..");
                 let call_result = stability_module_call.send().await;
-                match call_result {
-                    Ok(pending_tx) => {
-                        info!(
-                            "Awaiting {} confirmations..",
-                            config.tx_confirmations_required
-                        );
-                        let tx_result = pending_tx
-                            .confirmations(config.tx_confirmations_required)
-                            .await;
-                        match tx_result {
-                            Ok(tx) => {
-                                let tx_hash = tx.unwrap().transaction_hash;
-                                info!("Successful transaction!  tx_hash={tx_hash}");
-                            }
-                            Err(error) => {
-                                error!("Error during transaction: {}", error);
-                            }
-                        }
-                    }
-                    Err(contract_error) => {
-                        error!("Error during function call: {contract_error}");
-                        let contract_revert_result =
-                            contract_error.decode_contract_revert::<AzosStabilityModuleErrors>();
-                        if let Some(revert_reason) = contract_revert_result {
-                            error!("Contract revert reason: {:?}", revert_reason);
-                        }
-                    }
-                }
+                wait_for_stabillity_module_call(config, call_result).await
             }
             KeeperAction::None(swap_details) => {
                 info!(
